@@ -1,53 +1,59 @@
-name: Build Revive RPC
+name: build & release revive-rpc
 
 on:
- push:
-   tags:
-     - "v*"
- workflow_dispatch:
-   inputs:
-     tag:
-       description: "Release tag"
-       required: true
-       default: "v1.0.0"
-     branch:
-       description: "Polkadot SDK branch"
-       required: true
-       default: "master"
+  schedule:
+    - cron: "0 3 * * *"   # run once per day at 03:00 utc
+  workflow_dispatch:
 
 jobs:
- build:
-   runs-on: ubuntu-latest
-   permissions:
-     contents: write
-   
-   steps:
-     - uses: actions/checkout@v4
-     
-     - name: Install deps
-       run: |
-         sudo apt-get update
-         sudo apt-get install -y protobuf-compiler clang libclang-dev
-     
-     - name: Setup rust
-       uses: dtolnay/rust-toolchain@stable
-       with:
-         components: rust-src
-     
-     - name: Clone and build
-       run: |
-         git clone --depth 1 --branch ${{ github.event.inputs.branch || 'master' }} \
-           https://github.com/paritytech/polkadot-sdk.git
-         cd polkadot-sdk
-         cargo build --locked --profile production -p pallet-revive-eth-rpc --bin eth-rpc
-         mv target/production/eth-rpc ../eth-rpc-linux-x64
-         cd ..
-         sha256sum eth-rpc-linux-x64 > checksums.sha256
-     
-     - name: Release
-       uses: softprops/action-gh-release@v1
-       with:
-         tag_name: ${{ github.event.inputs.tag || github.ref_name }}
-         files: |
-           eth-rpc-linux-x64
-           checksums.sha256
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: checkout repo
+        uses: actions/checkout@v4
+
+      - name: install deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler clang libclang-dev pkg-config libssl-dev jq gh
+
+      - name: get latest stable release
+        id: latest
+        run: |
+          tag=$(curl -s https://api.github.com/repos/paritytech/polkadot-sdk/releases/latest | jq -r '.tag_name')
+          echo "tag=$tag" >> $GITHUB_ENV
+          echo "latest tag: $tag"
+
+      - name: get last built version
+        id: last
+        run: |
+          last=$(gh release list --limit 1 --json tagName -q '.[0].tagName' || echo none)
+          echo "last=$last" >> $GITHUB_ENV
+          echo "last built tag: $last"
+
+      - name: skip if already built
+        if: env.tag == env.last
+        run: echo "no new release, exiting."
+
+      - name: clone sdk and build
+        if: env.tag != env.last
+        run: |
+          git clone --depth 1 --branch ${{ env.tag }} https://github.com/paritytech/polkadot-sdk.git
+          cd polkadot-sdk
+          cargo build --release -p pallet-revive-eth-rpc --bin eth-rpc
+          cp target/release/eth-rpc ../eth-rpc-linux-x64
+          cd ..
+          sha256sum eth-rpc-linux-x64 > checksums.sha256
+
+      - name: create github release
+        if: env.tag != env.last
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.tag }}
+          name: revive-rpc ${{ env.tag }}
+          files: |
+            eth-rpc-linux-x64
+            checksums.sha256
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
