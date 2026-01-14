@@ -1,0 +1,53 @@
+name: build from branch
+
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: "Branch to build from paritytech/polkadot-sdk"
+        required: true
+        default: "master"
+        type: string
+      release_tag:
+        description: "Tag name for the release"
+        required: true
+        type: string
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: checkout repo
+        uses: actions/checkout@v4
+
+      - name: install rust 1.88
+        uses: dtolnay/rust-toolchain@1.88
+        with:
+          targets: wasm32-unknown-unknown
+          components: rust-src
+
+      - name: install deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler clang libclang-dev pkg-config libssl-dev jq gh
+
+      - name: clone sdk and build
+        run: |
+          git clone --depth 1 --branch ${{ inputs.branch }} https://github.com/paritytech/polkadot-sdk.git
+          cd polkadot-sdk
+          cargo build --release -p pallet-revive-eth-rpc --bin eth-rpc
+          cp target/release/eth-rpc ../eth-rpc-linux-x64
+          cd ..
+          sha256sum eth-rpc-linux-x64 > checksums.sha256
+
+      - name: create github release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.release_tag }}
+          name: revive-rpc ${{ inputs.release_tag }}
+          files: |
+            eth-rpc-linux-x64
+            checksums.sha256
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
